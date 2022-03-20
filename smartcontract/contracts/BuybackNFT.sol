@@ -80,7 +80,7 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         require(_payees[3] == marketingAddress, "Forth payee address should be of the marketer.");
 
         require(_shares[0] == 292, "The community wallet should receive 29.2% (292 shares).");
-        require(_shares[1] == shares[2] && shares[1] == shares[3], "The artist, the dev, and the marketer should receive equal shares.");
+        require(_shares[1] == _shares[2] && _shares[1] == _shares[3], "The artist, the dev, and the marketer should receive equal shares.");
         require(_shares[1] == 236, "Every team member should receive 23.6% (236 shares).");
 
         whitelistRootHash = _whitelistRootHash;
@@ -148,7 +148,7 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
     }
 
 
-    function setWhitelistRootHash(address[] calldata newWhitelistRootHash) external onlyTeam {
+    function setWhitelistRootHash(bytes32 newWhitelistRootHash) external onlyTeam {
         whitelistRootHash = newWhitelistRootHash;
     }
 
