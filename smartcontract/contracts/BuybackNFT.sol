@@ -187,35 +187,35 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         mintedBalance[msg.sender] += numToMint;
     }
 
-    function mintWhitelist(uint256 numToMint) external payable {
+    function mintWhitelist(uint256 _numToMint, bytes32[] calldata _merkleProof) external payable {
         // Check all whitelist minting preconditions.
         require(whitelistMintingAllowed == true, "Whitelist minting is currently not allowed.");
 
-        require(numToMint >= 1, "At least 1 NFT must be minted.");
+        require(_numToMint >= 1, "At least 1 NFT must be minted.");
 
         uint256 numMintedPublic = counterMintedPublic.current() - 1;  // Possibly cheaper than calling getNumMintedPublic.
-        require(numMintedPublic + numToMint <= maxSupplyPublic, "The requested number of NFTs would go over the maximum public supply.");
+        require(numMintedPublic + _numToMint <= maxSupplyPublic, "The requested number of NFTs would go over the maximum public supply.");
         
-        require(msg.value == numToMint * whitelistMintPriceWei, "Incorrect paid amount for minting the desired NFTs.");
+        require(msg.value == _numToMint * whitelistMintPriceWei, "Incorrect paid amount for minting the desired NFTs.");
 
         // Check that the sender is on the whitelist.
-        require(isWhitelisted(msg.sender) == true, "You are not on the whitelist.");
+        require(isWhitelisted(msg.sender, _merkleProof) == true, "You are not on the whitelist.");
 
         // Enforce whitelist wallet mint limit.
         uint256 numMintedBySender = mintedBalance[msg.sender];
         require(
-            numMintedBySender + numToMint <= walletWhitelistMintLimit, 
+            numMintedBySender + _numToMint <= walletWhitelistMintLimit, 
             "The requested number of NFTs would go over the wallet whitelist mint limit."
         );
 
         // The actual minting.
         uint256 nextTokenId;
-        for (uint iMinted = 0; iMinted < numToMint; iMinted++) {
+        for (uint iMinted = 0; iMinted < _numToMint; iMinted++) {
             nextTokenId = getNextTokenId();
             _safeMint(msg.sender, nextTokenId);
             counterMintedPublic.increment();
         }
-        mintedBalance[msg.sender] += numToMint;
+        mintedBalance[msg.sender] += _numToMint;
     }
 
     function mintTeam(address destination, uint256 numToMint) external onlyTeam {
