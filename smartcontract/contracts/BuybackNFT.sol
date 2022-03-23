@@ -1,94 +1,129 @@
 // SPDX-License-Identifier: MIT
+// The PaymentSplitter code is from OpenZeppelin, but slightly addapted to support
+// a locked amount of shares that never get split among payees.
 pragma solidity >=0.4.22 <0.9.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/finance/PaymentSplitter.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 
 import "./ERC721Tradable.sol";
 
-contract BuybackNFT is ERC721Tradable, PaymentSplitter {
+contract BuybackNFT is ERC721Tradable {
     // !!! Token IDs are indexed starting from 1 !!!
     using Counters for Counters.Counter;
 
     string private currentBaseURI;
 
     // Minting related.
-    uint256 private mintPriceWei = 0.035 ether;  // The price gets stored as an uint256 representing the price in WEI.
-    uint256 private whitelistMintPriceWei = 0.025 ether;
+    // TODO: specify mint prices.
+    uint256 private mintPriceWei = 0.4 ether;  // The price gets stored as an uint256 representing the price in WEI.
+    uint256 private resellPriceWei = 0.4 ether;
 
-    uint32 private maxSupplyPublic = 9_900;
-    uint32 private maxSupplyTeam = 100;
+    uint32 private maxSupply = 10_000;
 
-    Counters.Counter private counterMintedPublic;  // Starts at 1.
-    Counters.Counter private counterMintedTeam;  // Starts at 1.
+    Counters.Counter private counterBuybackable;  // Starts at 1 (when the real value is 0). It's equal to (Nb + 1) from formulae.
+    Counters.Counter private counterLastMinted; // Starts at 1 (when the real value is 0), stops at (maxSupply + 1). It never decreases.
 
     bool private mintingAllowed = false;
     bool private whitelistMintingAllowed = false;
+    bool private resellingAllowed = false;
 
     bytes32 private whitelistRootHash;
     
     mapping(address => uint256) public mintedBalance;  // How many NFTs each address has minted (different from how many it owns).
-    uint256 private walletWhitelistMintLimit = 5;
-    uint256 private walletMintLimit = 10;
+    uint256 private walletWhitelistMintLimit = 2;
+    uint256 private walletMintLimit = 20;
 
-    // TODO: Replace these with the real addresses.
-    // These are addresses from the Rinkeby test net.
-    address constant communityAddress = 0xddFC8347A32107eE5CE4825C5a2c4753Bcd580eb;
-    address constant artistAddress = 0x9972C48FBdeB6044A4075e19345F734AcC03f84D;
-    address constant devAddress = 0xb3ED329E26B3867b7161c5614EB6385e471A80e1;
-    address constant marketingAddress = 0xcb41c104eFFF7962DB8CEB42Da0f0E84b80C11e1;
-    // address constant openseaProxyRegistryAddress = 0xF57B2c51dED3A29e6891aba85459d600256Cf317;  // TODO: Replace this with the Mainnet address in the contract deployment migration!!!.
+    address[] teamMembers =  [  // TODO: Change these to real addresses.
+        0xddFC8347A32107eE5CE4825C5a2c4753Bcd580eb,
+        0x9972C48FBdeB6044A4075e19345F734AcC03f84D,
+        0xb3ED329E26B3867b7161c5614EB6385e471A80e1,
+        0xcb41c104eFFF7962DB8CEB42Da0f0E84b80C11e1
+    ];
+
+    // Buyback mechanism related
+    uint256 private buybackPriceWei = 0.3 ether;  // Must always be larger than any minting price.
+    uint256 private totalWeiInputs;
+    uint256 private totalWeiBuybacks;
+
+    event PaidBack(address nftOwner, uint256 nftId);  // Buyback event.
+
+    // address constant openseaProxyRegistryAddress = 0xF57B2c51dED3A29e6891aba85459d600256Cf317; for Rinkeby  // TODO: Replace this with the Mainnet address in the contract deployment migration!!!.
     // for MainNet: address constant openseaProxyRegistryAddress = 0xa5409ec958C83C3f309868babACA7c86DCB077c1;
 
     modifier onlyTeam {
+        bool isTeamMember = false;
+        for (uint256 iTeamMember = 0; iTeamMember < teamMembers.length; iTeamMember++) {
+            if (msg.sender == teamMembers[iTeamMember]) {
+                isTeamMember = true;
+                break;
+            }
+        }
+
         require(
-            msg.sender == devAddress || msg.sender == artistAddress || msg.sender == marketingAddress,
+            isTeamMember,
             "Only the team members can call this function."
         );
         _;
     }
 
+    // =============== PaymentSplitter state & events ===============
+    event PayeeAdded(address account, uint256 shares);
+    event PaymentReleased(address to, uint256 amount);
+    event PaymentReceived(address from, uint256 amount);
 
-    // ===== Constructor and OpenSea's interfaces related (baseTokenURI and _msgSender) =====
-    /*
-        payees = ["0x5B38Da6a701c568545dCfcB03FcB875f56beddC4", "0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2"]
-        shares = [60, 40]
-    */
+    uint256 public _totalShares;
+    uint256 public _totalReleased;
+    
+    mapping(address => uint256) public _shares;
+    mapping(address => uint256) public _released;
+    address[] public _payees;
+    // ==============================================================
+
+
+    // =============== Constructor and OpenSea's interfaces related (baseTokenURI and _msgSender) ===============
     constructor(
-            address[] memory _payees, uint256[] memory _shares, address _proxyRegistryAddress,
-            bytes32 _whitelistRootHash
-        ) 
-        ERC721Tradable("BuybackNFT", "BBNFT", _proxyRegistryAddress) 
-        PaymentSplitter(_payees, _shares) 
+            address[] memory payees_, uint256[] memory shares_,
+            bytes32 whitelistRootHash_,
+            address proxyRegistryAddress_
+        )
+        ERC721Tradable("BuybackNFT", "BBNFT", proxyRegistryAddress_)  
         payable {
         // Check that the constructor parameters are the expected ones.
+        require(payees_.length == shares_.length, "PaymentSplitter: payees and shares length mismatch");
+        require(payees_.length > 0, "PaymentSplitter: no payees");
+
+        // ========== Conditions for the agreed payees and their shares. ==========
+        // TODO: Change these conditions based on the number of payees and their agreed shares.
         require(
-            _payees.length == 4, 
-            "Please provide the address of the community wallet, of the artist, of the dev and of the marketer."
-        );
-        require(
-            _shares.length == 4, 
-            "Please provide the shares of the community wallet, of the artist, of the dev and of the marketer."
+            payees_.length == 4, 
+            "Please provide the addresses and shares of the community wallet, of the artist, of the dev and of the marketer."
         );
 
-        require(_payees[0] == communityAddress, "First payee address should be of the community wallet.");
-        require(_payees[1] == artistAddress, "Second payee address should be of the artist.");
-        require(_payees[2] == devAddress, "Third payee address should be of the dev.");
-        require(_payees[3] == marketingAddress, "Forth payee address should be of the marketer.");
+        require(payees_[0] == teamMembers[0], "First payee address should be of the community wallet.");
+        require(payees_[1] == teamMembers[1], "Second payee address should be of the artist.");
+        require(payees_[2] == teamMembers[2], "Third payee address should be of the dev.");
+        require(payees_[3] == teamMembers[3], "Forth payee address should be of the marketer.");
 
-        require(_shares[0] == 292, "The community wallet should receive 29.2% (292 shares).");
-        require(_shares[1] == _shares[2] && _shares[1] == _shares[3], "The artist, the dev, and the marketer should receive equal shares.");
-        require(_shares[1] == 236, "Every team member should receive 23.6% (236 shares).");
+        require(shares_[0] == 292, "The community wallet should receive 29.2% (292 shares).");
+        require(shares_[1] == shares_[2] && shares_[1] == shares_[3], "The artist, the dev, and the marketer should receive equal shares.");
+        require(shares_[1] == 236, "Every team member should receive 23.6% (236 shares).");
+        // ======================================================================================================
 
-        whitelistRootHash = _whitelistRootHash;
+        // ========== PaymentSplitter initialization ==========
+        for (uint256 i = 0; i < payees_.length; i++) {
+            _addPayee(payees_[i], shares_[i]);
+        }
+        // ====================================================
 
-        // counterMintedPublic and counterMintedTeam are initialized to 1, since starting at 0 leads to higher gas cost
-        // for the first public/team minter.
-        counterMintedPublic.increment();
-        counterMintedTeam.increment();
+        whitelistRootHash = whitelistRootHash_;
+
+        // Counters are initialized to 1, since starting at 0 leads to higher gas cost for the first minter.
+        counterBuybackable.increment();
+        counterLastMinted.increment();
 
         currentBaseURI = "http://18.133.31.150/api/";  // TODO: Replace this with the actual base uri of the backend.
     }
@@ -110,7 +145,7 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         return ContextMixin.msgSender();
     }
 
-    // ===== Minting configurations =====
+    // =============== Setters ===============
     function allowWhitelistMint() external onlyTeam {
         require(whitelistMintingAllowed == false, "Whitelist minting is already allowed.");  // Try to save some gas.
         whitelistMintingAllowed = true;
@@ -131,12 +166,54 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         mintingAllowed = false;
     }
 
+    function allowResell() external onlyTeam {
+        require(resellingAllowed == false, "Reselling is already allowed.");  // Try to save some gas.
+        resellingAllowed = true;
+    }
+
+    function forbidResell() external onlyTeam {
+        require(resellingAllowed == true, "Reselling is already forbidden.");
+        resellingAllowed = false;
+    }
+
     function setMintPriceWei(uint256 newMintPriceWei) public onlyTeam {
+        require(
+            newMintPriceWei >= buybackPriceWei, 
+            "The minting price must always be >= than the refund price to ensure enough ETH is in the wallet for later refunds."
+        );
         mintPriceWei = newMintPriceWei;
     }
 
-    function setWhitelistMintPriceWei(uint256 newWhitelistMintPriceWei) public onlyTeam {
-        whitelistMintPriceWei = newWhitelistMintPriceWei;
+    function setResellPriceWei(uint256 newResellPriceWei) public onlyTeam {
+        require(
+            newResellPriceWei >= buybackPriceWei, 
+            "The sale price must always be >= than the refund price to ensure enough ETH is in the wallet for later refunds."
+        );
+        resellPriceWei = newResellPriceWei;
+    }
+
+    function setBuybackPriceWei(uint256 newBuybackPriceWei) public onlyTeam {
+        if (newBuybackPriceWei > buybackPriceWei) {
+            // Insure the past.
+            require(
+                getNumBuybackable() == 0, 
+                "The refunded amount can only be increased when there are no refundable NFTs to ensure enough ETH is in the wallet for later refunds."
+            );
+        }
+        // Insure the future.
+        // Theoretically, the next 2 requires are only needed when newBuybackPriceWei > buybackPriceWei, otherwise they should already be satisfied,
+        // but it doesn't hurt to be extra safe.
+        require(
+            newBuybackPriceWei <= mintPriceWei,
+            "The refunded amount cannot be larger than the minting price. Consider increasing the mint price first."
+        );
+
+        require(
+            newBuybackPriceWei <= resellPriceWei,
+            "The refunded amount cannot be larger than the resale price. Consider increasing the resale price first."
+        );
+
+        buybackPriceWei = newBuybackPriceWei;
     }
 
     function setWalletMintLimit(uint256 newMintLimit) public onlyTeam {
@@ -147,96 +224,27 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         walletWhitelistMintLimit = newWhitelistMintLimit;
     }
 
-
     function setWhitelistRootHash(bytes32 newWhitelistRootHash) external onlyTeam {
         whitelistRootHash = newWhitelistRootHash;
     }
 
-    function setMaxSupplyPublic(uint32 newMaxSupplyPublic) public onlyTeam {
-        require(newMaxSupplyPublic + maxSupplyTeam <= 10_000, "The absolute maximum supply can't be over 10,000.");
-        maxSupplyPublic = newMaxSupplyPublic;
+    function setMaxSupply(uint32 newMaxSupply) public onlyTeam {
+        require(newMaxSupply <= 10_000, "The absolute maximum supply can't be over 10,000.");
+        maxSupply = newMaxSupply;
     }
+    // ======================================================
 
-
-    // ===== Minting =====
-    function mint(uint256 numToMint) external payable {
-        // Check all minting preconditions.
-        require(mintingAllowed == true, "Minting is currently not allowed.");
-
-        require(numToMint >= 1, "At least 1 NFT must be minted.");
-
-        uint256 numMintedPublic = counterMintedPublic.current() - 1;  // Possibly cheaper than calling getNumMintedPublic.
-        require(numMintedPublic + numToMint <= maxSupplyPublic, "The requested number of NFTs would go over the maximum public supply.");
-        
-        require(msg.value == numToMint * mintPriceWei, "Incorrect paid amount for minting the desired NFTs.");
-
-        // Enforce wallet mint limit.
-        uint256 numMintedBySender = mintedBalance[msg.sender];
-        require(
-            numMintedBySender + numToMint <= walletMintLimit, 
-            "The requested number of NFTs would go over the wallet mint limit."
-        );
-
-        // The actual minting.
-        uint256 nextTokenId;
-        for (uint iMinted = 0; iMinted < numToMint; iMinted++) {
-            nextTokenId = getNextTokenId();
-            _safeMint(msg.sender, nextTokenId);
-            counterMintedPublic.increment();
-        }
-        mintedBalance[msg.sender] += numToMint;
-    }
-
-    function mintWhitelist(uint256 _numToMint, bytes32[] calldata _merkleProof) external payable {
-        // Check all whitelist minting preconditions.
-        require(whitelistMintingAllowed == true, "Whitelist minting is currently not allowed.");
-
-        require(_numToMint >= 1, "At least 1 NFT must be minted.");
-
-        uint256 numMintedPublic = counterMintedPublic.current() - 1;  // Possibly cheaper than calling getNumMintedPublic.
-        require(numMintedPublic + _numToMint <= maxSupplyPublic, "The requested number of NFTs would go over the maximum public supply.");
-        
-        require(msg.value == _numToMint * whitelistMintPriceWei, "Incorrect paid amount for minting the desired NFTs.");
-
-        // Check that the sender is on the whitelist.
-        require(isWhitelisted(msg.sender, _merkleProof) == true, "You are not on the whitelist.");
-
-        // Enforce whitelist wallet mint limit.
-        uint256 numMintedBySender = mintedBalance[msg.sender];
-        require(
-            numMintedBySender + _numToMint <= walletWhitelistMintLimit, 
-            "The requested number of NFTs would go over the wallet whitelist mint limit."
-        );
-
-        // The actual minting.
-        uint256 nextTokenId;
-        for (uint iMinted = 0; iMinted < _numToMint; iMinted++) {
-            nextTokenId = getNextTokenId();
-            _safeMint(msg.sender, nextTokenId);
-            counterMintedPublic.increment();
-        }
-        mintedBalance[msg.sender] += _numToMint;
-    }
-
-    function mintTeam(address destination, uint256 numToMint) external onlyTeam {
-        uint256 numMintedTeam = counterMintedTeam.current() - 1;  // Possibly cheaper than calling getNumMintedTeam.
-        require(numMintedTeam + numToMint <= maxSupplyTeam, "The requested amount of NFTs would go over the maximum team supply.");
-
-        uint256 nextTokenId;
-        for (uint iMinted = 0; iMinted < numToMint; iMinted++) {
-            nextTokenId = getNextTokenId();
-            _safeMint(destination, nextTokenId);
-            counterMintedTeam.increment();
-        }
-    }
-
-    // ===== Getters =====
+    // =============== Getters ===============
     function getMintPriceWei() public view returns (uint256) {
         return mintPriceWei;
     }
 
-    function getWhitelistMintPriceWei() public view returns (uint256) {
-        return whitelistMintPriceWei;
+    function getResellPriceWei() public view returns (uint256) {
+        return resellPriceWei;
+    }
+
+    function getBuybackPriceWei() public view returns (uint256) {
+        return buybackPriceWei;
     }
 
     function getWalletMintLimit() public view returns (uint256) {
@@ -251,34 +259,56 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         return mintedBalance[minter];
     }
 
-    function getNumMintedPublic() public view returns (uint256) {
-        return counterMintedPublic.current() - 1;
+    function getIdLastMinted() public view returns (uint256) {
+        return counterLastMinted.current() - 1;
     }
 
-    function getNumMintedTeam() public view returns (uint256) {
-        return counterMintedTeam.current() - 1;
-    }
-
-    function getNumMinted() public view returns (uint256) {
-        return counterMintedPublic.current() + counterMintedTeam.current() - 2;
-    }
-
-    function getPublicSupply() public view returns (uint32) {
-        return maxSupplyPublic;
-    }
-
-    function getTeamSupply() public view returns (uint32) {
-        return maxSupplyTeam;
+    function getNumBuybackable() public view returns (uint256) {
+        return counterBuybackable.current() - 1;
     }
 
     function getTotalSupply() public view returns (uint32) {
-        return maxSupplyPublic + maxSupplyTeam;
+        return maxSupply;
     }
 
-    function getNextTokenId() public view returns (uint256) {
-        // return (counterMintedPublic.current() - 1) + (counterMintedTeam.current() - 1) + 1;
-        // gets "optimized" to:
-        return counterMintedPublic.current() + counterMintedTeam.current() - 1;
+    function getNextMintableId() public view returns (uint256) {
+        return counterLastMinted.current();
+    }
+
+    function getNumResellableIds() public view returns (uint256) {
+        uint256 numResellable;
+
+        uint256 idLastMinted = getIdLastMinted();
+        for (uint256 tokenId = 1; tokenId <= idLastMinted; ++tokenId) {
+            if (!_exists(tokenId)) {
+                numResellable++;
+            }
+        }
+
+        return numResellable;
+    }
+
+    function getResellableIds() public view returns (uint256[] memory) {
+        uint256 numResellable = getNumResellableIds();
+        uint256[] memory resellableIds = new uint256[](numResellable);
+
+        uint256 idLastMinted = getIdLastMinted();
+        uint256 iResellable;
+        for (uint256 tokenId = 1; tokenId <= idLastMinted; ++tokenId) {
+            if (!_exists(tokenId)) {
+                resellableIds[iResellable] = tokenId;
+                iResellable++;
+            }
+        }
+
+        return resellableIds;
+    }
+
+    function isResellable(uint256 tokenId) public view returns (bool) {
+        require(tokenId >= 1, "NFT ids are indexed from 1.");
+        require(tokenId <= maxSupply, "NFT id is past the maximum supply.");
+
+        return !_exists(tokenId);
     }
 
     function getWhitelistRootHash() public view returns (bytes32) {
@@ -293,14 +323,248 @@ contract BuybackNFT is ERC721Tradable, PaymentSplitter {
         return whitelistMintingAllowed;
     }
 
-    function isWhitelisted(address _user, bytes32[] calldata _merkleProof) public view returns (bool) {
-        bytes32 leaf = keccak256(abi.encodePacked(_user));
-        
-        return MerkleProof.verify(_merkleProof, whitelistRootHash, leaf);
+    function isResellingAllowed() public view returns (bool) {
+        return resellingAllowed;
     }
 
-    // ===== Auxiliary =====
-    function random() internal view returns (uint256) {
-        return uint256(keccak256(abi.encode(block.timestamp, block.difficulty)));
+    function isWhitelisted(address user_, bytes32[] calldata merkleProof_) public view returns (bool) {
+        bytes32 leaf = keccak256(abi.encodePacked(user_));
+        
+        return MerkleProof.verify(merkleProof_, whitelistRootHash, leaf);
     }
+    // =======================================
+
+
+    // =============== Minting & Refunding & Buying bought back functions ===============
+    function mint(uint256 numToMint_) external payable {
+        // Check all minting preconditions.
+        require(mintingAllowed == true, "Minting is currently not allowed.");
+
+        require(numToMint_ >= 1, "At least 1 NFT must be minted.");
+
+        uint256 numMinted = getIdLastMinted();
+        require(numMinted + numToMint_ <= maxSupply, "The requested number of NFTs would go over the maximum supply.");
+        
+        require(msg.value == numToMint_ * mintPriceWei, "Incorrect paid amount for minting the desired NFTs.");
+
+        // Enforce wallet mint limit.
+        uint256 numMintedBySender = mintedBalance[msg.sender];
+        require(
+            numMintedBySender + numToMint_ <= walletMintLimit, 
+            "The requested number of NFTs would go over the wallet mint limit."
+        );
+
+        // The actual minting.
+        uint256 nextTokenId;
+        for (uint iMinted = 0; iMinted < numToMint_; iMinted++) {
+            nextTokenId = getNextMintableId();
+            _safeMint(msg.sender, nextTokenId);
+            counterLastMinted.increment();
+            counterBuybackable.increment();
+        }
+        mintedBalance[msg.sender] += numToMint_;
+        
+        totalWeiInputs += msg.value;
+    }
+
+    function mintWhitelist(uint256 numToMint_, bytes32[] calldata merkleProof_) external payable {
+        // Check all whitelist minting preconditions.
+        require(whitelistMintingAllowed == true, "Whitelist minting is currently not allowed.");
+
+        require(numToMint_ >= 1, "At least 1 NFT must be minted.");
+
+        uint256 numMinted = getIdLastMinted();
+        require(numMinted + numToMint_ <= maxSupply, "The requested number of NFTs would go over the maximum supply.");
+        
+        require(msg.value == numToMint_ * mintPriceWei, "Incorrect paid amount for minting the desired NFTs.");
+
+        // Check that the sender is on the whitelist.
+        require(isWhitelisted(msg.sender, merkleProof_) == true, "Wallet address is not on the whitelist.");
+
+        // Enforce whitelist wallet mint limit.
+        uint256 numMintedBySender = mintedBalance[msg.sender];
+        require(
+            numMintedBySender + numToMint_ <= walletWhitelistMintLimit, 
+            "The requested number of NFTs would go over the wallet whitelist mint limit."
+        );
+
+        // The actual minting.
+        uint256 nextTokenId;
+        for (uint iMinted = 0; iMinted < numToMint_; iMinted++) {
+            nextTokenId = getNextMintableId();
+            _safeMint(msg.sender, nextTokenId);
+            counterLastMinted.increment();
+            counterBuybackable.increment();
+        }
+        mintedBalance[msg.sender] += numToMint_;
+
+        totalWeiInputs += msg.value;
+    }
+
+    function buyBoughtBack(uint256 tokenId) external payable {
+        require(resellingAllowed == true, "Reselling bought back NFTs is currently deactivated.");
+        require(isResellable(tokenId) == true, "The specified NFT is not available for resale at the moment.");
+
+        require(msg.value == resellPriceWei, "Incorrect paid amount for buying a resold NFT.");
+
+        _safeMint(msg.sender, tokenId);
+        counterBuybackable.increment();
+
+        totalWeiInputs += msg.value;
+    }
+
+    function buyMultipleBoughtBack(uint256[] calldata tokenIds) external payable {
+        require(resellingAllowed == true, "Reselling bought back NFTs is currently deactivated.");
+
+        for (uint256 iTokenId = 0; iTokenId < tokenIds.length; ++iTokenId) {
+            require(
+                isResellable(tokenIds[iTokenId]) == true, 
+                "One of the specified NFTs is not available for resale at the moment."
+            );
+        }
+
+        require(msg.value == resellPriceWei * tokenIds.length, "Incorrect paid amount for buying a resold NFT.");
+
+        for (uint256 iTokenId = 0; iTokenId < tokenIds.length; ++iTokenId) {
+            uint256 tokenId = tokenIds[iTokenId];
+
+            _safeMint(msg.sender, tokenId);
+            counterBuybackable.increment();
+        }
+
+        totalWeiInputs += msg.value;
+    }
+
+    function partialRefund(uint256 tokenId) external {
+        require(tokenId >= 1, "NFT ids are indexed from 1.");
+        require(tokenId <= maxSupply, "NFT id is past the maximum supply.");
+
+        require(ownerOf(tokenId) == msg.sender, "Wallet does not hold the NFT requested to be refunded.");
+
+        _burn(tokenId);
+        Address.sendValue(payable(msg.sender), buybackPriceWei);
+        counterBuybackable.decrement();
+
+        totalWeiBuybacks += buybackPriceWei;
+    }
+    // =================================================
+
+    // =============== PaymentSplitter implementation ===============
+    /**
+     * @dev The Ether received will be logged with {PaymentReceived} events. Note that these events are not fully
+     * reliable: it's possible for a contract to receive Ether without triggering this function. This only affects the
+     * reliability of the events, and not the actual splitting of Ether.
+     *
+     * To learn more about this see the Solidity documentation for
+     * https://solidity.readthedocs.io/en/latest/contracts.html#fallback-function[fallback
+     * functions].
+     */
+    receive() external payable virtual {
+        emit PaymentReceived(_msgSender(), msg.value);
+    }
+
+    /**
+     * @dev Getter for the total shares held by payees.
+     */
+    function totalShares() public view returns (uint256) {
+        return _totalShares;
+    }
+
+    /**
+     * @dev Getter for the total amount of Ether already released to payees.
+     */
+    function totalReleased() public view returns (uint256) {
+        return _totalReleased;
+    }
+
+    function getTotalProfit() public view returns (uint256) {
+        uint256 numBuybackable = getNumBuybackable();
+        
+        return totalWeiInputs - totalWeiBuybacks - numBuybackable * buybackPriceWei;
+    }
+
+    /**
+     * @dev Getter for the amount of shares held by an account.
+     */
+    function shares(address account) public view returns (uint256) {
+        return _shares[account];
+    }
+
+    /**
+     * @dev Getter for the amount of Ether already released to a payee.
+     */
+    function released(address account) public view returns (uint256) {
+        return _released[account];
+    }
+
+    /**
+     * @dev Getter for the address of the payee number `index`.
+     */
+    function payee(uint256 index) public view returns (address) {
+        return _payees[index];
+    }
+
+    /**
+     * @dev Triggers a transfer to `account` of the amount of Ether they are owed, according to their percentage of the
+     * total shares and their previous withdrawals.
+     */
+    function release(address payable account) public virtual {
+        require(_shares[account] > 0, "PaymentSplitter: account has no shares");
+
+        uint256 totalProfit = getTotalProfit();
+        uint256 payment = _pendingPayment(account, totalProfit, released(account));
+
+        require(payment > 0, "PaymentSplitter: account is not due payment");
+        // This should never happen, but better safe than sorry:
+        require(address(this).balance > 0, "Entitled to payment, but contract balance is currently 0.");
+
+        payment = Math.min(payment, address(this).balance);  // Again, it should never happen that payment > balance.
+
+        _released[account] += payment;
+        _totalReleased += payment;
+
+        Address.sendValue(account, payment);
+        emit PaymentReleased(account, payment);
+    }
+
+    function releaseForEveryone() public {
+        uint256 totalProfit = getTotalProfit();
+
+        for (uint256 iPayee = 0; iPayee < _payees.length; iPayee++) {
+            address currPayee = _payees[iPayee];
+            uint256 payment = _pendingPayment(currPayee, totalProfit, released(currPayee));
+            if (payment > 0) {
+                release(payable(currPayee));
+            }
+        }
+    }
+
+    /**
+     * @dev internal logic for computing the pending payment of an `account` given the token historical balances and
+     * already released amounts.
+     */
+    function _pendingPayment(
+        address account,
+        uint256 totalProfit,
+        uint256 alreadyReleased
+    ) private view returns (uint256) {
+        return (totalProfit * _shares[account]) / _totalShares - alreadyReleased;
+    }
+
+    /**
+     * @dev Add a new payee to the contract.
+     * @param account The address of the payee to add.
+     * @param shares_ The number of shares owned by the payee.
+     */
+    function _addPayee(address account, uint256 shares_) private {
+        require(account != address(0), "PaymentSplitter: account is the zero address");
+        require(shares_ > 0, "PaymentSplitter: shares are 0");
+        require(_shares[account] == 0, "PaymentSplitter: account already has shares");
+
+        _payees.push(account);
+        _shares[account] = shares_;
+        _totalShares = _totalShares + shares_;
+        emit PayeeAdded(account, shares_);
+    }
+    // ==============================================================
 }
