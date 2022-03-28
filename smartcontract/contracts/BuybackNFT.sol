@@ -19,8 +19,8 @@ contract BuybackNFT is ERC721Tradable {
 
     // Minting related.
     // TODO: specify mint prices.
-    uint256 private mintPriceWei = 0.4 ether;  // The price gets stored as an uint256 representing the price in WEI.
-    uint256 private resellPriceWei = 0.4 ether;
+    uint256 private mintPriceWei = 0.03 ether;  // The price gets stored as an uint256 representing the price in WEI.
+    uint256 private resellPriceWei = 0.03 ether;
 
     uint32 private maxSupply = 10_000;
 
@@ -45,7 +45,7 @@ contract BuybackNFT is ERC721Tradable {
     ];
 
     // Buyback mechanism related
-    uint256 private buybackPriceWei = 0.3 ether;  // Must always be larger than any minting price.
+    uint256 private buybackPriceWei = 0.03 ether;  // Must always be smaller than any minting price.
     uint256 private totalWeiInputs;
     uint256 private totalWeiBuybacks;
 
@@ -306,7 +306,9 @@ contract BuybackNFT is ERC721Tradable {
 
     function isResellable(uint256 tokenId) public view returns (bool) {
         require(tokenId >= 1, "NFT ids are indexed from 1.");
-        require(tokenId <= maxSupply, "NFT id is past the maximum supply.");
+
+        uint256 idLastMinted = getIdLastMinted();
+        require(tokenId <= idLastMinted, "NFT id was not minted or is past the maximum supply.");
 
         return !_exists(tokenId);
     }
@@ -423,7 +425,7 @@ contract BuybackNFT is ERC721Tradable {
             );
         }
 
-        require(msg.value == resellPriceWei * tokenIds.length, "Incorrect paid amount for buying a resold NFT.");
+        require(msg.value == resellPriceWei * tokenIds.length, "Incorrect paid amount for buying the desired resold NFTs.");
 
         for (uint256 iTokenId = 0; iTokenId < tokenIds.length; ++iTokenId) {
             uint256 tokenId = tokenIds[iTokenId];
@@ -437,7 +439,9 @@ contract BuybackNFT is ERC721Tradable {
 
     function partialRefund(uint256 tokenId) external {
         require(tokenId >= 1, "NFT ids are indexed from 1.");
-        require(tokenId <= maxSupply, "NFT id is past the maximum supply.");
+        
+        uint256 idLastMinted = getIdLastMinted();
+        require(tokenId <= idLastMinted, "NFT id was not minted or is past the maximum supply.");
 
         require(ownerOf(tokenId) == msg.sender, "Wallet does not hold the NFT requested to be refunded.");
 
