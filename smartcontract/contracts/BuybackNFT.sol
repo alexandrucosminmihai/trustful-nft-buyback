@@ -283,7 +283,7 @@ contract BuybackNFT is ERC721Tradable {
         uint256 idLastMinted = getIdLastMinted();
         uint256 iOwned;
         for (uint256 tokenId = 1; tokenId <= idLastMinted && iOwned < numOwned; ++tokenId) {
-            if (ownerOf(tokenId) == user_) {
+            if (_exists(tokenId) && ownerOf(tokenId) == user_) {
                 ownedIds[iOwned] = tokenId;
                 iOwned++;
             }
