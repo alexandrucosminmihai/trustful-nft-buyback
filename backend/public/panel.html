@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Control panel</title>
+
+    <link rel="stylesheet" href="control-panel.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.6.1/dist/web3.min.js"></script>
+    <script src="https://unpkg.com/@metamask/detect-provider/dist/detect-provider.min.js"></script>
+</head>
+<body>
+    <h1>
+        Control panel
+    </h1>
+    <h3>Connected wallet address: <span id="connected-wallet-address"></span></h3>
+
+    <div id="logs-div">
+        <p>Status: <span id="logs"></span></p>
+    </div>
+
+    <h2>General info</h2>
+    <table id="table-general-info">
+        <tr>
+            <th>Name</th>
+            <th>Value</th>
+        </tr>
+    </table>
+
+    <h2>User info</h2>
+    <form>
+        <div class="row-inputs-parent-div">
+            <div class="row-input-div">
+                <input type="button" id="user-info-button" value="Get info">
+            </div>
+            <div class="row-input-div">
+                <label for="user-info-address">
+                    Wallet address
+                </label>
+            </div>
+            <div class="row-input-div">
+                <input type="text" id="user-info-address">
+            </div>
+        </div>
+    </form>
+    <br>
+    <table id="table-user-info">
+        <tr>
+            <th>Name</th>
+            <th>Value</th>
+        </tr>
+    </table>
+
+    <h2>All functions</h2>
+    <div id="all-functions-div">
+
+    </div>
+
+    <script src="control-panel.js"></script>
+</body>
+</html>

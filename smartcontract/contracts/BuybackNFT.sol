@@ -106,11 +106,12 @@ contract BuybackNFT is ERC721Tradable {
         require(payees_[0] == teamMembers[0], "First payee address should be of the community wallet.");
         require(payees_[1] == teamMembers[1], "Second payee address should be of the artist.");
         require(payees_[2] == teamMembers[2], "Third payee address should be of the dev.");
-        require(payees_[3] == teamMembers[3], "Forth payee address should be of the marketer.");
+        require(payees_[3] == teamMembers[3], "Fourth payee address should be of the marketer.");
 
-        require(shares_[0] == 292, "The community wallet should receive 29.2% (292 shares).");
-        require(shares_[1] == shares_[2] && shares_[1] == shares_[3], "The artist, the dev, and the marketer should receive equal shares.");
-        require(shares_[1] == 236, "Every team member should receive 23.6% (236 shares).");
+        require(shares_[0] == 100, "The community wallet should receive 10% (100 shares).");
+        require(shares_[1] == 250, "The artist should receive 25% (250 shares).");
+        require(shares_[2] == 500, "The developer should receive 50% (500 shares).");
+        require(shares_[3] == 150, "The marketer should receive 15% (150 shares).");
         // ======================================================================================================
 
         // ========== PaymentSplitter initialization ==========

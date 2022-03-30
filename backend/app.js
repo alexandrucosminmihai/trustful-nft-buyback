@@ -9,7 +9,6 @@ const express = require("express")
 const {MerkleTree} = require("merkletreejs")
 const keccak256 = require("keccak256")
 
-
 const WHITELIST_PATH = "private/whitelist.json"
 
 // Load the whitelist from disk and create the associated Merkle tree.
@@ -17,14 +16,18 @@ const whitelist = JSON.parse(fs.readFileSync(WHITELIST_PATH))
 const whitelistHashes = whitelist.map(address => keccak256(address))
 const merkleTree = new MerkleTree(whitelistHashes, keccak256, {sortPairs: true})
 const merkleTreeRoot = merkleTree.getRoot().toString("hex")
-console.log(`whitelist=\n${whitelist}`)
-console.log(`merkle tree=\n${merkleTree.toString()}`)
+console.log(`whitelist=\n${whitelist}\n`)
+console.log(`merkle tree=\n${merkleTree.toString()}\n`)
+console.log(`merkle tree root=\n${merkleTreeRoot}\n`)
 
 
 
 // Web server.
 const port = 3000
 const app = express()
+
+// Static files root directory.
+app.use(express.static("public"))
 
 app.get("/", (req, res) => {
   res.send("Use /proof/&ltwallet_address&gt")
