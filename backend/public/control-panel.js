@@ -166,7 +166,7 @@ function createFormFromABIFunction(ABIEntry, contract, account) {
 (
     async () => {
         const CHAIN_ID = "0x4"  // "0x1" = mainnet "0x4" = Rinkeby
-        const CONTRACT_ADDRESS = "0x4D2Bec7cbCfACf30DB0aD4a2C51aeA196F42B241";
+        const CONTRACT_ADDRESS = "0x7429A2448D1734c57D7261f45043D875815030d0";
         const ABI_JSON_PATH = "/BuybackNFT_ABI.json";
 
         const ABI_JSON_RESPONSE = await fetch(ABI_JSON_PATH);
