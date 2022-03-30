@@ -1,7 +1,8 @@
 function castToType(valueStr, typeStr) {
-    if (typeStr.includes("int")) {
-        return parseInt(valueStr);
-    } else if (typeStr == "bool") {
+    // if (typeStr.includes("int")) {
+    //     return parseInt(valueStr);
+    // }
+    if (typeStr == "bool") {
         valueStr = valueStr.toLowerCase();
         if (valueStr == "false") {
             return false;
