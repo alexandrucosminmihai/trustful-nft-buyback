@@ -18,36 +18,36 @@ contract BuybackNFT is ERC721Tradable {
     string private currentBaseURI;
 
     // Minting related.
-    // TODO: specify mint prices.
-    uint256 private mintPriceWei = 0.03 ether;  // The price gets stored as an uint256 representing the price in WEI.
-    uint256 private resellPriceWei = 0.03 ether;
+    uint256 private mintPriceWei = 0.03 ether;  // The price gets stored as an uint256 representing the price in WEI.  // TODO: set to actual value
 
-    uint32 private maxSupply = 10_000;
+    uint32 private maxSupply = 5_000;  // TODO: set to actual value
 
     Counters.Counter private counterBuybackable;  // Starts at 1 (when the real value is 0). It's equal to (Nb + 1) from formulae.
     Counters.Counter private counterLastMinted; // Starts at 1 (when the real value is 0), stops at (maxSupply + 1). It never decreases.
 
     bool private mintingAllowed = false;
     bool private whitelistMintingAllowed = false;
-    bool private resellingAllowed = false;
 
     bytes32 private whitelistRootHash;
     
     mapping(address => uint256) public mintedBalance;  // How many NFTs each address has minted (different from how many it owns).
-    uint256 private walletWhitelistMintLimit = 2;
-    uint256 private walletMintLimit = 20;
+    uint256 private walletWhitelistMintLimit = 2;  // TODO: set to actual value.
+    uint256 private walletMintLimit = 20;  // TODO: set to actual value.
 
-    address[] teamMembers =  [  // TODO: Change these to real addresses.
+    address[] private teamMembers =  [  // TODO: Change these to real addresses.
         0xddFC8347A32107eE5CE4825C5a2c4753Bcd580eb,
         0x9972C48FBdeB6044A4075e19345F734AcC03f84D,
         0xb3ED329E26B3867b7161c5614EB6385e471A80e1,
         0xcb41c104eFFF7962DB8CEB42Da0f0E84b80C11e1
     ];
+    address private insuranceFundManager = 0xb3ED329E26B3867b7161c5614EB6385e471A80e1;  // TODO: set to actual value.
 
     // Buyback mechanism related
-    uint256 private buybackPriceWei = 0.03 ether;  // Must always be smaller than any minting price.
+    bool private refundingAllowed = false;
+    uint256 private buybackPriceWei = 0.03 ether;  // Must always be smaller than any minting price.  // TODO: set to actual value.
     uint256 private totalWeiInputs;
     uint256 private totalWeiBuybacks;
+    uint256 private numIdsExtractedInsurance;  // The equivalent of how many NFTs' refund insurance was extracted.
 
     event PaidBack(address nftOwner, uint256 nftId);  // Buyback event.
 
@@ -67,6 +67,11 @@ contract BuybackNFT is ERC721Tradable {
             isTeamMember,
             "Only the team members can call this function."
         );
+        _;
+    }
+
+    modifier onlyManager {
+        require(msg.sender == insuranceFundManager, "Only the insurance fund manager can call this function.");
         _;
     }
 
@@ -167,14 +172,15 @@ contract BuybackNFT is ERC721Tradable {
         mintingAllowed = false;
     }
 
-    function allowResell() external onlyTeam {
-        require(resellingAllowed == false, "Reselling is already allowed.");  // Try to save some gas.
-        resellingAllowed = true;
+    function allowRefund() external onlyTeam {
+        require(refundingAllowed == false, "Refunding is already allowed");  // Try to save some gas.
+        require(numIdsExtractedInsurance == 0, "To enable refunding, make sure the insurance refund is complete.");
+        refundingAllowed = true;
     }
 
-    function forbidResell() external onlyTeam {
-        require(resellingAllowed == true, "Reselling is already forbidden.");
-        resellingAllowed = false;
+    function forbidRefund() external onlyTeam {
+        require(refundingAllowed == true, "Refunding is already forbidden");  // Try to save some gas.
+        refundingAllowed = false;
     }
 
     function setMintPriceWei(uint256 newMintPriceWei) public onlyTeam {
@@ -185,15 +191,12 @@ contract BuybackNFT is ERC721Tradable {
         mintPriceWei = newMintPriceWei;
     }
 
-    function setResellPriceWei(uint256 newResellPriceWei) public onlyTeam {
-        require(
-            newResellPriceWei >= buybackPriceWei, 
-            "The sale price must always be >= than the refund price to ensure enough ETH is in the wallet for later refunds."
-        );
-        resellPriceWei = newResellPriceWei;
-    }
-
     function setBuybackPriceWei(uint256 newBuybackPriceWei) public onlyTeam {
+        require(
+            numIdsExtractedInsurance == 0, 
+            "Before potentially reducing the buyback price, the insurance fund must be complete. Otherwise, profit takers might try to take ETH that is not present in the contract."
+        );
+
         if (newBuybackPriceWei > buybackPriceWei) {
             // Insure the past.
             require(
@@ -202,16 +205,11 @@ contract BuybackNFT is ERC721Tradable {
             );
         }
         // Insure the future.
-        // Theoretically, the next 2 requires are only needed when newBuybackPriceWei > buybackPriceWei, otherwise they should already be satisfied,
+        // Theoretically, the next require is only needed when newBuybackPriceWei > buybackPriceWei, otherwise it should already be satisfied,
         // but it doesn't hurt to be extra safe.
         require(
             newBuybackPriceWei <= mintPriceWei,
             "The refunded amount cannot be larger than the minting price. Consider increasing the mint price first."
-        );
-
-        require(
-            newBuybackPriceWei <= resellPriceWei,
-            "The refunded amount cannot be larger than the resale price. Consider increasing the resale price first."
         );
 
         buybackPriceWei = newBuybackPriceWei;
@@ -238,10 +236,6 @@ contract BuybackNFT is ERC721Tradable {
     // =============== Getters ===============
     function getMintPriceWei() public view returns (uint256) {
         return mintPriceWei;
-    }
-
-    function getResellPriceWei() public view returns (uint256) {
-        return resellPriceWei;
     }
 
     function getBuybackPriceWei() public view returns (uint256) {
@@ -292,42 +286,33 @@ contract BuybackNFT is ERC721Tradable {
         return ownedIds;
     }
 
-    function getNumResellableIds() public view returns (uint256) {
-        uint256 numResellable;
+    function getNumBurntIds() public view returns (uint256) {
+        uint256 numBurnt;
 
         uint256 idLastMinted = getIdLastMinted();
         for (uint256 tokenId = 1; tokenId <= idLastMinted; ++tokenId) {
             if (!_exists(tokenId)) {
-                numResellable++;
+                numBurnt++;
             }
         }
 
-        return numResellable;
+        return numBurnt;
     }
 
-    function getResellableIds() public view returns (uint256[] memory) {
-        uint256 numResellable = getNumResellableIds();
-        uint256[] memory resellableIds = new uint256[](numResellable);
+    function getBurntIds() public view returns (uint256[] memory) {
+        uint256 numBurnt = getNumBurntIds();
+        uint256[] memory burntIds = new uint256[](numBurnt);
 
         uint256 idLastMinted = getIdLastMinted();
-        uint256 iResellable;
+        uint256 iBurnt;
         for (uint256 tokenId = 1; tokenId <= idLastMinted; ++tokenId) {
             if (!_exists(tokenId)) {
-                resellableIds[iResellable] = tokenId;
-                iResellable++;
+                burntIds[iBurnt] = tokenId;
+                iBurnt++;
             }
         }
 
-        return resellableIds;
-    }
-
-    function isResellable(uint256 tokenId) public view returns (bool) {
-        require(tokenId >= 1, "NFT ids are indexed from 1.");
-
-        uint256 idLastMinted = getIdLastMinted();
-        require(tokenId <= idLastMinted, "NFT id was not minted or is past the maximum supply.");
-
-        return !_exists(tokenId);
+        return burntIds;
     }
 
     function getWhitelistRootHash() public view returns (bytes32) {
@@ -340,10 +325,6 @@ contract BuybackNFT is ERC721Tradable {
 
     function isWhitelistMintingAllowed() public view returns (bool) {
         return whitelistMintingAllowed;
-    }
-
-    function isResellingAllowed() public view returns (bool) {
-        return resellingAllowed;
     }
 
     function isWhitelisted(address user_, bytes32[] calldata merkleProof_) public view returns (bool) {
@@ -420,41 +401,8 @@ contract BuybackNFT is ERC721Tradable {
         totalWeiInputs += msg.value;
     }
 
-    function buyBoughtBack(uint256 tokenId) external payable {
-        require(resellingAllowed == true, "Reselling bought back NFTs is currently deactivated.");
-        require(isResellable(tokenId) == true, "The specified NFT is not available for resale at the moment.");
-
-        require(msg.value == resellPriceWei, "Incorrect paid amount for buying a resold NFT.");
-
-        _safeMint(msg.sender, tokenId);
-        counterBuybackable.increment();
-
-        totalWeiInputs += msg.value;
-    }
-
-    function buyMultipleBoughtBack(uint256[] calldata tokenIds) external payable {
-        require(resellingAllowed == true, "Reselling bought back NFTs is currently deactivated.");
-
-        for (uint256 iTokenId = 0; iTokenId < tokenIds.length; ++iTokenId) {
-            require(
-                isResellable(tokenIds[iTokenId]) == true, 
-                "One of the specified NFTs is not available for resale at the moment."
-            );
-        }
-
-        require(msg.value == resellPriceWei * tokenIds.length, "Incorrect paid amount for buying the desired resold NFTs.");
-
-        for (uint256 iTokenId = 0; iTokenId < tokenIds.length; ++iTokenId) {
-            uint256 tokenId = tokenIds[iTokenId];
-
-            _safeMint(msg.sender, tokenId);
-            counterBuybackable.increment();
-        }
-
-        totalWeiInputs += msg.value;
-    }
-
     function partialRefund(uint256 tokenId) external {
+        require(refundingAllowed == true, "Refunding is not currently allowed");
         require(tokenId >= 1, "NFT ids are indexed from 1.");
         
         uint256 idLastMinted = getIdLastMinted();
@@ -467,6 +415,28 @@ contract BuybackNFT is ERC721Tradable {
         counterBuybackable.decrement();
 
         totalWeiBuybacks += buybackPriceWei;
+    }
+
+    function extractInsuranceFund() external onlyManager {
+        require(refundingAllowed == false, "In order to extract the insurance fund, refunding must be forbidden!");
+
+        uint256 numBuybackable = getNumBuybackable();
+
+        uint256 numIdsRemainingToExtractFor = numBuybackable - numIdsExtractedInsurance;
+        require(numIdsRemainingToExtractFor > 0, "The insurance funds were already extracted for all insured NFTs.");
+
+        uint256 availableInsuranceFund = numIdsRemainingToExtractFor * buybackPriceWei;
+
+        Address.sendValue(payable(insuranceFundManager), availableInsuranceFund);
+        numIdsExtractedInsurance = numBuybackable;
+    }
+
+    function returnInsuranceFund() external payable {
+        require(numIdsExtractedInsurance > 0, "The insurance fund is already complete.");
+
+        require(msg.value == numIdsExtractedInsurance * buybackPriceWei, "Incorrect amount returned for the insurance fund.");
+
+        numIdsExtractedInsurance = 0;
     }
     // =================================================
 
@@ -502,6 +472,22 @@ contract BuybackNFT is ERC721Tradable {
         uint256 numBuybackable = getNumBuybackable();
         
         return totalWeiInputs - totalWeiBuybacks - numBuybackable * buybackPriceWei;
+    }
+
+    function getTotalInsuranceFund() public view returns (uint256) {
+        uint256 numBuybackable = getNumBuybackable();
+
+        return numBuybackable * buybackPriceWei;
+    }
+
+    function getRemainingInsuranceFund() public view returns (uint256) {
+        uint256 numBuybackable = getNumBuybackable();
+
+        return (numBuybackable - numIdsExtractedInsurance) * buybackPriceWei;
+    }
+
+    function getExtractedInsuranceFund() public view returns (uint256) {
+        return numIdsExtractedInsurance * buybackPriceWei;
     }
 
     /**
