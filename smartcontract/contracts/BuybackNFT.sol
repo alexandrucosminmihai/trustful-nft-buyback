@@ -101,6 +101,9 @@ contract BuybackNFT is ERC721Tradable {
         require(payees_.length == shares_.length, "PaymentSplitter: payees and shares length mismatch");
         require(payees_.length > 0, "PaymentSplitter: no payees");
 
+        // Make sure the initialization values are correct.
+        require(mintPriceWei >= buybackPriceWei, "Buyback price must always be smaller or equal to the minting price to ensure it can be paid.");
+
         // ========== Conditions for the agreed payees and their shares. ==========
         // TODO: Change these conditions based on the number of payees and their agreed shares.
         require(
